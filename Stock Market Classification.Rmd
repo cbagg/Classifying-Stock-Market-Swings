@@ -1,0 +1,212 @@
+---
+title: 'Classifying Stock Market Swings'
+author: "Chase Baggett"
+output:
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+library(ISLR)
+library(GGally)
+library(caret)
+library(data.table)
+library(ggplot2)
+library(MASS)
+library(class)
+```
+
+#Introduction
+I am going to use Logistic Regression, Linear Discriminate Analysis, Quadratic Discriminate Analysis, and KNN to attempt to predict up and down swings in the stock market by week. I am going to use alot visualizations and charts to do model comparison as I believe them to be more effective than using traditional model diagnostics the majority of the time. 
+
+#Data
+I am using the Weekly dataset provides by the ISLR package, which were originally extracted from Yahoo Finance based on the S&P 500. 
+
+#Analysis
+
+##Exploratory
+The below plot shows how our 2 variable combinations might provide class separation, and the box plots alsohelp us see one variable relationships with the Direciton class. We have more ups than downs.
+
+We can see the up/down variable is calculated from the Today variable, which is confusingly named as it is a measure of the Week, not the day. Most of the lags look bivariate normal without alot of separation that's apparent to the naked eye. 
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+ggpairs(Weekly,mapping=aes(color=Direction,alpha=.5))
+```
+
+In addition, fitting a smooth of direction on each of the lags and volume doesn't present any obvious break points along the lag values in which you would see a class balance change, though Lag2 looks like there might be some separation, as does Lag5, but it looks to be created a small number of points. 
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+library(tidyr)
+m_dat <-gather(Weekly[, c("Direction", 
+                          "Lag1", 
+                          "Lag2", 
+                          "Lag3", 
+                          "Lag4", 
+                          "Lag5",
+                          "Volume")], key = "Direction")
+colnames(m_dat) <- c("Direction","Variable","value")
+ggplot(m_dat,aes(y=as.numeric(Direction),x=as.numeric(value))) + 
+  geom_point() + 
+  geom_smooth(method="loess") +
+  facet_wrap(~Variable,scales="free") + 
+  xlab("Lag Value") + 
+  ylab("Direction")
+```
+
+##Fitting the Models
+I am going to fit and display confusion Matrices for each of the different models, and will comment on them at the end.
+
+###Logistic Regression
+
+We see significance on a logistic regression from Lag2.
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+fit.logistic <- glm(Direction~Lag1+Lag2+Lag3+Lag4+Lag5+Volume,data=Weekly,family=binomial)
+summary(fit.logistic)
+```
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+train <- subset(Weekly,Year<=2008)
+test <- subset(Weekly,Year>2008)
+fit.logistic <- glm(Direction~Lag2,data=Weekly,family=binomial)
+cm_dat <- data.frame(Actual = test$Direction,
+                     Logistic = ifelse(predict(fit.logistic,newdata = test) > .5,"Up","Down"))
+confusionMatrix(cm_dat$Logistic,cm_dat$Actual)
+```
+
+###Linear Discriminate Analysis
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+fit.lda <- lda(Direction~Lag2,data=train)
+
+cm_dat$LDA <- predict(fit.lda,newdata = test)$class
+confusionMatrix(cm_dat$LDA,cm_dat$Actual)
+```
+###Quadratic Discriminate Analysis
+
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+fit.qda <- qda(Direction~Lag2,data=train)
+cm_dat$QDA <- predict(fit.qda,newdata = test)$class
+confusionMatrix(cm_dat$QDA,cm_dat$Actual)
+```
+
+###K-Nearest Neighbors
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+fit.knn <- knn(data.frame(train$Lag2),data.frame(test$Lag2),train$Direction,k=1,prob = TRUE)
+fit.knn5 <- knn(data.frame(train$Lag2),data.frame(test$Lag2),train$Direction,k=5,prob = TRUE)
+fit.knn25 <- knn(data.frame(train$Lag2),data.frame(test$Lag2),train$Direction,k=25,prob = TRUE)
+fit.knn50 <- knn(data.frame(train$Lag2),data.frame(test$Lag2),train$Direction,k=50,prob = TRUE)
+cm_dat$KNN <- fit.knn
+confusionMatrix(cm_dat$KNN,cm_dat$Actual)
+```
+
+
+##Comparing the Models
+
+Confusion Matrices are a very one dimensional way of looking at classifiers that ignores the tunability of some of these models. The premise behind each of the charts I am going to use is roughly the same. What we do is we work our way through the dataset from the most confident prediction (highest probability) to the lowest confidence (lowest probability), and we see how our measures of various metrics change. 
+
+The general premise here is that we should be more accurate on our higher confidence predictions, and therefore might get different types of value stopping at different points. I will go over the specific metrics used in each chart.
+
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+diagnostics <- data.frame(Actual=ifelse(test$Direction=="Up",1,0))
+diagnostics$Logistic <- predict(fit.logistic,newdata = test)
+diagnostics$LDA <- predict(fit.lda,newdata = test)$posterior[,1]
+diagnostics$QDA <- predict(fit.lda,newdata = test)$posterior[,1]
+diagnostics$KNN <- attr(fit.knn,"prob")
+diagnostics$KNN5 <- attr(fit.knn5,"prob")
+diagnostics$KNN25 <- attr(fit.knn25,"prob")
+diagnostics$KNN50 <- attr(fit.knn50,"prob")
+
+make_diagnostics <- function(actual,predicted,label){
+  tbl <- data.frame(Probability=predicted,Actual=actual)
+ # tbl <- data.frame(Probability=diagnostics$Logistic,Actual=diagnostics$Actual)
+  tbl <- tbl[order(tbl$Probability,decreasing = T),]
+  
+  tbl$Samples <- 1:nrow(tbl)
+  tbl$TruePositives <- cumsum(tbl$Actual)
+  tbl$FalsePositives <- cumsum(ifelse(tbl$Actual == 1,0,1))
+  tbl$FalseNegatives <- sum(tbl$Actual) - cumsum(tbl$Actual)
+  tbl$TrueNegatives <- cumsum(ifelse(tbl$Actual == 0,1,0))
+  
+  
+  tbl$Precision <- tbl$TruePositives/(tbl$TruePositives + tbl$FalsePositives)
+  tbl$Recall <- tbl$TruePositives/(tbl$TruePositives + tbl$FalseNegatives)
+  tbl$Support <- (tbl$TruePositives + tbl$FalsePositives)/nrow(tbl)
+  tbl$Sensitivity <- tbl$TruePositives/(tbl$TruePositives + tbl$FalseNegatives)
+  tbl$TPR <- tbl$TruePositives/sum(tbl$Actual)
+  tbl$FPR <- tbl$TrueNegatives/sum(ifelse(tbl$Actual==0,1,0))
+  tbl$Specificity <- tbl$TrueNegatives/(tbl$TrueNegatives + tbl$FalsePositives)     
+  tbl$Lift <- (tbl$TruePositives/tbl$Samples)/mean(tbl$Actual)
+  tbl$Model <- label
+  return(tbl)
+}
+
+diag_tbls <- list()
+diag_tbls[[1]] <- make_diagnostics(diagnostics$Actual,diagnostics$Logistic,label = "Logistic")
+diag_tbls[[2]] <- make_diagnostics(diagnostics$Actual,diagnostics$LDA,label="LDA")
+diag_tbls[[3]] <- make_diagnostics(diagnostics$Actual,diagnostics$QDA,label="QDA")
+diag_tbls[[4]] <- make_diagnostics(diagnostics$Actual,diagnostics$KNN,label="KNN")
+diag_tbls[[5]] <- make_diagnostics(diagnostics$Actual,diagnostics$KNN5,label="KNN5")
+diag_tbls[[6]] <- make_diagnostics(diagnostics$Actual,diagnostics$KNN25,label="KNN25")
+diag_tbls[[7]] <- make_diagnostics(diagnostics$Actual,diagnostics$KNN50,label="KNN50")
+
+diag <- rbindlist(diag_tbls)
+```
+
+###ROC Plot
+The ROC plot shows the trade off between True Positives and False Positives. The dashed line represents a random sort order through the data, wherein you search through 50% of the points and find 50% of the True Positives and 50% of the False Positives. 
+
+The general idea is that your model should have area under the curve to beat pure randomness. In this specific example, Logistic Regression and KNN with k=25 start off strong, but with logistic regression we lose any marginal area under the curve very early on in our model, which means that we can only effectively grab the high confidence records. However, with KNN we can continue investing much longer. 
+
+$$True Positive Rate = \frac{True Positives}{True Positives + False Negatives}$$
+$$False Positive Rate = /frac{False Positives}{False Positives + True Negatvies}$$
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+ggplot(diag,aes(y=TPR,x=FPR,color=Model)) + 
+  geom_line() +
+  geom_abline(slope = 1,intercept = 0,linetype="dashed",color="black") +
+  ggtitle("ROC Curve for All Models") +
+  theme(legend.position = "bottom")
+```
+
+
+###Cumulative Gains Chart
+
+The cumulative gains chart is similar to the ROC chart but very helpful when you have a class imbalance, which we do happen to have slightly in this dataset. This is very useful when you think of positive events like treasure and you cumulatively "dig" for them. Once again, the dashed line represents randomness. 
+
+We're effectively beating randomness until about the 20 most confident week with logistic regression. After which, our slope is lower than that of randomness, so our search pattern through the data using a classifier is inefficient. 
+
+However, with KNN with k=25, we beat randomness through the majority of the data. 
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+ ggplot(diag,aes(x=Samples,y=TruePositives,color=Model)) + 
+  geom_line() + 
+  ggtitle("Cumulative Gains Chart") + 
+  geom_abline(intercept=0,slope=mean(diagnostics$Actual),color="black",linetype="dashed") +
+  theme(legend.position = "bottom")
+```
+
+### Lift
+
+Traditionally, when you think of this idea of skimming the best guesses off the top, it makes sense to think of it in terms of lift. In a betting market lift can be very valuable because it helps to understand the relationship your model has to the underlying probability. 
+
+We can see that logistic regression provides us with 1.5x the probability of randomness at the beginning of the model, but declines througout. A gambler with no trading fees in a fair and unbiased market with no house edge and no aversion to risk would continue buying until his Lift was below 1, at which point the fair odds return would be negative. This assumes the house (having no edge) would pay him based on the expectation of a win, and that by having lift, he beating that expectation. 
+
+Lift can be thought of as $$Lift = \frac{Confidence}{E(Confidence)}$$.
+
+Which in this scenario, the expectation of confidence is the observed mean of the market, or the natural class balance. 
+```{r,warning=FALSE,echo=FALSE,message=FALSE,fig.width=10}
+ggplot(diag,aes(x=Samples,y=Lift,color=Model)) + 
+  geom_line() + 
+  ggtitle("Lift Chart") +
+  theme(legend.position="bottom")
+```
+
+
+#Conclusion
+
+If I were using this dataset to trade on the market, I would use KNN with k=25, as it provides the strongest results. All other models provide classification very hard to take advantage of. 
